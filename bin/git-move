@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { printf 'git move: %s\n' "$*" >&2; exit 1; }
+usage() { printf 'Usage: git move <commit> --before=<commit>\n       git move <commit> --after=<commit>\n'; }
+help() {
+  usage
+  cat <<'HELP'
+
+Move a commit immediately before or after another commit without opening
+an editor. The moved commit remains a separate commit.
+
+Options:
+  --before=<commit>  Place the source immediately before the target.
+  --after=<commit>   Place the source immediately after the target.
+  -h, --help        Show this help and exit.
+
+Examples:
+  git move HEAD --before=HEAD~2
+  git move abc1234 --after=def5678
+  git-move HEAD~2 --after=HEAD
+
+Commits may be hashes or Git refs. Both must be ancestors of HEAD.
+The history being replayed must contain no merges, and tracked files must
+have no staged or unstaged changes. Reordering rewrites commit hashes.
+
+If conflicts occur, resolve them, stage the resolved files, then run:
+  git rebase --continue
+To cancel the operation and restore the original history:
+  git rebase --abort
+HELP
+}
+
+# Git invokes this mode to reorder its todo list without opening an editor.
+if [[ ${1-} == --edit-todo ]]; then
+  todo=$2
+  mapfile -t lines < "$todo"
+  source_index=-1 target_index=-1
+  for i in "${!lines[@]}"; do
+    read -r action hash rest <<< "${lines[i]}"
+    [[ $action == pick ]] || continue
+    if [[ $GIVE_MOVE_SOURCE == "$hash"* ]]; then source_index=$i; fi
+    if [[ $GIVE_MOVE_TARGET == "$hash"* ]]; then target_index=$i; fi
+  done
+  (( source_index >= 0 && target_index >= 0 )) || die 'commits missing from rebase todo'
+  {
+    for i in "${!lines[@]}"; do
+      (( i != source_index )) || continue
+      if (( i == target_index )) && [[ $GIVE_MOVE_POSITION == before ]]; then
+        printf '%s\n' "${lines[source_index]}"
+      fi
+      printf '%s\n' "${lines[i]}"
+      if (( i == target_index )) && [[ $GIVE_MOVE_POSITION == after ]]; then
+        printf '%s\n' "${lines[source_index]}"
+      fi
+    done
+  } > "$todo"
+  exit 0
+fi
+
+if [[ ${1-} == --help || ${1-} == -h ]]; then help; exit 0; fi
+[[ $# == 2 ]] || { usage >&2; exit 1; }
+case $2 in
+  --before=*) position=before; target_ref=${2#--before=} ;;
+  --after=*) position=after; target_ref=${2#--after=} ;;
+  *) usage >&2; exit 1 ;;
+esac
+source_commit=$(git rev-parse --verify --end-of-options "$1^{commit}") || die 'invalid source commit'
+target_commit=$(git rev-parse --verify --end-of-options "$target_ref^{commit}") || die 'invalid target commit'
+[[ $source_commit != "$target_commit" ]] || die 'source and target are the same commit'
+git merge-base --is-ancestor "$source_commit" HEAD || die 'source is not an ancestor of HEAD'
+git merge-base --is-ancestor "$target_commit" HEAD || die 'target is not an ancestor of HEAD'
+git diff --quiet && git diff --cached --quiet || die 'commit or stash your working changes first'
+
+if git merge-base --is-ancestor "$source_commit" "$target_commit"; then
+  oldest=$source_commit
+elif git merge-base --is-ancestor "$target_commit" "$source_commit"; then
+  oldest=$target_commit
+else
+  die 'source and target must be on the same linear history'
+fi
+if parent=$(git rev-parse --verify "$oldest^" 2>/dev/null); then
+  range="$parent..HEAD"
+  base=("$parent")
+else
+  range=HEAD
+  base=(--root)
+fi
+[[ -z $(git rev-list --merges "$range") ]] || die 'moving commits across merge history is not supported'
+
+self=$(realpath -- "$0")
+printf -v editor 'bash %q --edit-todo' "$self"
+export GIVE_MOVE_SOURCE=$source_commit GIVE_MOVE_TARGET=$target_commit GIVE_MOVE_POSITION=$position
+GIT_SEQUENCE_EDITOR=$editor git -c rebase.instructionFormat=%s -c rebase.abbreviateCommands=false rebase \
+  -i --no-autosquash --no-update-refs --no-autostash \
+  --reapply-cherry-picks --keep-empty --empty=keep "${base[@]}"

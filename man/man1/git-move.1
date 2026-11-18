@@ -1,0 +1,36 @@
+.TH GIT-MOVE 1
+.SH NAME
+git-move \- reorder a commit without opening an editor
+.SH SYNOPSIS
+.B git move
+<commit> --before=<commit>
+.br
+.B git move
+<commit> --after=<commit>
+.SH DESCRIPTION
+Move a commit immediately before or after another commit, keeping it as a
+separate commit. Commit arguments accept hashes or Git refs.
+Both commits must be ancestors of HEAD. The history being replayed must
+contain no merges. Tracked files must have no staged or unstaged changes.
+Reordering rewrites commit hashes.
+.SH OPTIONS
+.TP
+.B --before=<commit>
+Place the source immediately before the target.
+.TP
+.B --after=<commit>
+Place the source immediately after the target.
+.TP
+.B -h, --help
+Show help and exit.
+.SH EXAMPLES
+.nf
+git move HEAD --before=HEAD~2
+git move abc1234 --after=def5678
+git-move HEAD~2 --after=HEAD
+.fi
+.SH CONFLICTS
+Resolve conflicts, stage the resolved files, then run
+.BR "git rebase --continue" .
+To cancel and restore the original history, run
+.BR "git rebase --abort" .
